@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuizMaster Local</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-violet-100 via-purple-50 to-fuchsia-100 text-slate-800">
+
+    <!-- Navigation Header -->
+    <header class="sticky top-0 z-20 backdrop-blur-md bg-white/70 border-b border-white/50 shadow-sm">
+        <div class="max-w-3xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2 cursor-pointer" onclick="app.switchMode('quiz')">
+                <div class="bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white p-2 rounded-xl shadow-lg shadow-violet-200">
+                    <i data-lucide="sparkles" class="w-5 h-5"></i>
+                </div>
+                <h1 class="font-black text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-violet-600 to-fuchsia-600 hidden sm:block">
+                    QuizMaster <span class="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded-full ml-2 align-middle text-slate-500">HTML</span>
+                </h1>
+            </div>
+            
+            <!-- Toggle Buttons -->
+            <div class="bg-slate-100/50 p-1 rounded-xl flex gap-1 border border-slate-200/50">
+                <button id="btn-play" onclick="app.switchMode('quiz')" class="flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 bg-white text-violet-600 shadow-md shadow-violet-100">
+                    <i data-lucide="play" class="w-4 h-4"></i> Play
+                </button>
+                <button id="btn-build" onclick="app.switchMode('builder')" class="flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 text-slate-500 hover:text-slate-700 hover:bg-white/50">
+                    <i data-lucide="edit-3" class="w-4 h-4"></i> Build
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main id="app-container" class="max-w-2xl mx-auto px-4 py-8 pb-24">
+        <!-- Content injected by JS -->
+    </main>
+
+    <!-- Javascript Logic -->
+    <script>
+        const STORAGE_KEY = 'quiz_master_data_v1';
+
+        const app = {
+            state: {
+                mode: 'quiz', // quiz, builder, result
+                questions: [],
+                quizDeck: [],
+                currentQIndex: 0,
+                score: 0,
+                selectedOption: null,
+                isAnswered: false,
+                editingId: null,
+                // Temp form state
+                formQuestion: '',
+                formOptions: ['', '', '', ''],
+                formCorrect: 0
+            },
+
+            init: function() {
+                this.loadData();
+                // Force a reset on init to ensure fresh random order
+                this.resetQuiz();
+                this.render();
+            },
+
+            // --- Data Management ---
+            loadData: function() {
+                const data = localStorage.getItem(STORAGE_KEY);
+                if (data) {
+                    try {
+                        this.state.questions = JSON.parse(data);
+                    } catch(e) {
+                        console.error("Error parsing data", e);
+                        this.state.questions = [];
+                    }
+                }
+            },
+
+            saveData: function() {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state.questions));
+                this.render();
+            },
+
+            // Helper: Aggressive shuffle (Fisher-Yates performed 3 times)
+            superShuffle: function(array) {
+                for (let pass = 0; pass < 3; pass++) {
+                    for (let i = array.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [array[i], array[j]] = [array[j], array[i]];
+                    }
+                }
+                return array;
+            },
+
+            shuffleDeck: function() {
+                if (!this.state.questions || this.state.questions.length === 0) return;
+
+                // 1. Create a "Playable" version with intensely shuffled options
+                let playableDeck = this.state.questions.map(q => {
+                    const optionsWithData = q.options.map((opt, i) => ({
+                        text: opt,
+                        isCorrect: i === q.correctIndex
+                    }));
+
+                    // Shuffle options 3 times
+                    this.superShuffle(optionsWithData);
+
+                    return {
+                        ...q,
+                        _shuffledOptions: optionsWithData
+                    };
+                });
+
+                // 2. Shuffle the Question Order 3 times
+                this.superShuffle(playableDeck);
+                
+                this.state.quizDeck = playableDeck;
+                console.log("Deck Super-Shuffled. New first question:", this.state.quizDeck[0].question);
+            },
+
+            // --- Navigation ---
+            switchMode: function(newMode) {
+                this.state.mode = newMode;
+                
+                // Reset quiz when entering quiz mode
+                if (newMode === 'quiz') {
+                    this.resetQuiz();
+                }
+                // Reset form when entering builder
+                if (newMode === 'builder') {
+                    this.resetForm();
+                }
+                
+                this.updateNavStyles();
+                this.render();
+            },
+
+            updateNavStyles: function() {
+                const btnPlay = document.getElementById('btn-play');
+                const btnBuild = document.getElementById('btn-build');
+                const activeClass = "bg-white text-violet-600 shadow-md shadow-violet-100";
+                const inactiveClass = "text-slate-500 hover:text-slate-700 hover:bg-white/50";
+
+                if (!btnPlay || !btnBuild) return;
+
+                if (this.state.mode === 'builder') {
+                    btnBuild.className = `flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 ${activeClass}`;
+                    btnPlay.className = `flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 ${inactiveClass}`;
+                } else {
+                    btnPlay.className = `flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 ${activeClass}`;
+                    btnBuild.className = `flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all duration-200 ${inactiveClass}`;
+                }
+            },
+
+            // --- Builder Logic ---
+            resetForm: function() {
+                this.state.editingId = null;
+                this.state.formQuestion = '';
+                this.state.formOptions = ['', '', '', ''];
+                this.state.formCorrect = 0;
+            },
+
+            saveQuestion: function(e) {
+                e.preventDefault(); // prevent reload
+                
+                // Validate
+                if (!this.state.formQuestion.trim() || this.state.formOptions.some(o => !o.trim())) {
+                    alert("Please fill in all fields.");
+                    return;
+                }
+
+                const newQ = {
+                    id: this.state.editingId || Date.now().toString(),
+                    question: this.state.formQuestion,
+                    options: [...this.state.formOptions],
+                    correctIndex: this.state.formCorrect,
+                    createdAt: new Date().toISOString()
+                };
+
+                if (this.state.editingId) {
+                    // Update existing
+                    this.state.questions = this.state.questions.map(q => q.id === newQ.id ? newQ : q);
+                } else {
+                    // Add new
+                    this.state.questions.push(newQ);
+                }
+
+                this.saveData();
+                this.resetForm();
+                this.render();
+                window.scrollTo(0, document.body.scrollHeight); // scroll to list
+            },
+
+            editQuestion: function(id) {
+                const q = this.state.questions.find(q => q.id === id);
+                if (q) {
+                    this.state.editingId = q.id;
+                    this.state.formQuestion = q.question;
+                    this.state.formOptions = [...q.options];
+                    this.state.formCorrect = q.correctIndex;
+                    this.render();
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+            },
+
+            deleteQuestion: function(id) {
+                if(confirm("Delete this question?")) {
+                    this.state.questions = this.state.questions.filter(q => q.id !== id);
+                    if (this.state.editingId === id) this.resetForm();
+                    this.saveData();
+                }
+            },
+
+            updateFormOption: function(idx, val) {
+                this.state.formOptions[idx] = val;
+            },
+
+            // --- Quiz Logic ---
+            resetQuiz: function() {
+                this.shuffleDeck();
+                this.state.currentQIndex = 0;
+                this.state.score = 0;
+                this.state.selectedOption = null;
+                this.state.isAnswered = false;
+            },
+
+            handleAnswer: function(idx) {
+                if (this.state.isAnswered) return;
+                
+                this.state.selectedOption = idx;
+                this.state.isAnswered = true;
+                
+                const currentQ = this.state.quizDeck[this.state.currentQIndex];
+                const selectedOptObj = currentQ._shuffledOptions[idx];
+
+                if (selectedOptObj.isCorrect) {
+                    this.state.score++;
+                }
+                this.render();
+            },
+
+            nextQuestion: function() {
+                if (this.state.currentQIndex < this.state.quizDeck.length - 1) {
+                    this.state.currentQIndex++;
+                    this.state.selectedOption = null;
+                    this.state.isAnswered = false;
+                    this.render();
+                } else {
+                    this.state.mode = 'result';
+                    this.render();
+                }
+            },
+
+            // --- Rendering ---
+            render: function() {
+                const container = document.getElementById('app-container');
+                let html = '';
+
+                // 1. BUILDER MODE
+                if (this.state.mode === 'builder') {
+                    html = `
+                        <div class="fade-in space-y-8">
+                            <!-- Form -->
+                            <div class="bg-white/90 backdrop-blur rounded-3xl shadow-lg border border-white p-6 md:p-8 ring-4 ${this.state.editingId ? 'ring-violet-100 shadow-violet-200' : 'ring-transparent'}">
+                                <div class="flex items-center justify-between mb-6">
+                                    <div class="flex items-center gap-3">
+                                        <div class="p-3 rounded-xl ${this.state.editingId ? 'bg-violet-100 text-violet-600' : 'bg-slate-100 text-slate-600'}">
+                                            <i data-lucide="${this.state.editingId ? 'edit-3' : 'plus'}" class="w-6 h-6"></i>
+                                        </div>
+                                        <div>
+                                            <h2 class="text-xl font-black text-slate-800">${this.state.editingId ? 'Edit Question' : 'New Question'}</h2>
+                                            <p class="text-sm text-slate-500 font-medium">Craft your challenge below</p>
+                                        </div>
+                                    </div>
+                                    ${this.state.editingId ? `<button onclick="app.resetForm(); app.render()" class="text-sm font-bold text-slate-400 hover:text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg">Cancel</button>` : ''}
+                                </div>
+
+                                <form onsubmit="app.saveQuestion(event)" class="space-y-5">
+                                    <textarea required placeholder="What is the question?" 
+                                        oninput="app.state.formQuestion = this.value"
+                                        class="w-full p-4 rounded-2xl bg-slate-50 border-2 border-slate-100 focus:border-violet-500 outline-none transition-all resize-none h-32 text-lg font-medium placeholder:text-slate-400">${this.state.formQuestion}</textarea>
+                                    
+                                    <div class="grid gap-3">
+                                        <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Answer Options (Select correct one)</label>
+                                        ${[0,1,2,3].map(i => `
+                                            <div class="flex items-center gap-3 group relative">
+                                                <div class="absolute left-3 pointer-events-none text-slate-400 font-bold text-xs">${['A','B','C','D'][i]}</div>
+                                                <input type="text" required placeholder="Option ${i+1}" value="${this.state.formOptions[i]}" 
+                                                    oninput="app.updateFormOption(${i}, this.value)"
+                                                    class="flex-1 pl-8 p-3.5 rounded-xl border-2 outline-none transition-all font-medium text-slate-700 ${this.state.formCorrect === i ? 'border-emerald-400 bg-emerald-50/30' : 'border-slate-100 bg-white focus:border-violet-400'}">
+                                                <input type="radio" name="correct" ${this.state.formCorrect === i ? 'checked' : ''} 
+                                                    onchange="app.state.formCorrect = ${i}; app.render()"
+                                                    class="w-6 h-6 text-emerald-500 cursor-pointer accent-emerald-500">
+                                            </div>
+                                        `).join('')}
+                                    </div>
+
+                                    <button type="submit" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-3.5 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 mt-4">
+                                        <i data-lucide="${this.state.editingId ? 'save' : 'plus'}" class="w-5 h-5"></i>
+                                        ${this.state.editingId ? 'Update Question' : 'Add to Deck'}
+                                    </button>
+                                </form>
+                            </div>
+
+                            <!-- List -->
+                            <div class="space-y-4">
+                                <h3 class="text-sm font-bold text-slate-500 uppercase tracking-wider px-2">Your Deck (${this.state.questions.length})</h3>
+                                ${this.state.questions.length === 0 ? 
+                                    `<div class="text-center py-12 bg-white/50 rounded-3xl border-2 border-dashed border-slate-300 text-slate-400">No questions yet.</div>` : 
+                                    `<div class="grid gap-4">
+                                        ${this.state.questions.map((q, idx) => `
+                                            <div class="bg-white p-5 rounded-2xl border border-white shadow-sm flex justify-between items-start group hover:shadow-md transition-all">
+                                                <div class="flex-1">
+                                                    <div class="flex items-center gap-3 mb-2">
+                                                        <span class="bg-slate-100 text-slate-500 text-xs font-black px-2.5 py-1 rounded-lg">#${idx + 1}</span>
+                                                        <h4 class="font-bold text-slate-800 leading-snug">${q.question}</h4>
+                                                    </div>
+                                                    <div class="text-sm text-emerald-600 font-medium pl-10">Answer: ${q.options[q.correctIndex]}</div>
+                                                </div>
+                                                <div class="flex gap-2 pl-4">
+                                                    <button onclick="app.editQuestion('${q.id}')" class="p-2 rounded-xl bg-slate-50 text-slate-400 hover:text-violet-600 hover:bg-violet-50"><i data-lucide="edit-3" class="w-4 h-4"></i></button>
+                                                    <button onclick="app.deleteQuestion('${q.id}')" class="p-2 rounded-xl bg-slate-50 text-slate-400 hover:text-rose-500 hover:bg-rose-50"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                                </div>
+                                            </div>
+                                        `).join('')}
+                                    </div>`
+                                }
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // 2. QUIZ MODE
+                else if (this.state.mode === 'quiz') {
+                    if (this.state.questions.length === 0) {
+                        html = `
+                            <div class="flex flex-col items-center justify-center py-20 text-center fade-in">
+                                <div class="bg-white p-8 rounded-full mb-6 shadow-xl shadow-violet-100 ring-8 ring-white/50">
+                                    <i data-lucide="help-circle" class="w-16 h-16 text-violet-400"></i>
+                                </div>
+                                <h2 class="text-3xl font-black text-slate-800 mb-3">Deck Empty</h2>
+                                <p class="text-slate-500 mb-8">Create some questions to get started!</p>
+                                <button onclick="app.switchMode('builder')" class="flex items-center gap-2 bg-slate-900 text-white px-8 py-4 rounded-2xl font-bold shadow-lg">
+                                    <i data-lucide="plus"></i> Create Question
+                                </button>
+                            </div>
+                        `;
+                    } else {
+                        const q = this.state.quizDeck[this.state.currentQIndex];
+                        const progress = ((this.state.currentQIndex + 1) / this.state.quizDeck.length) * 100;
+                        
+                        html = `
+                            <div class="fade-in">
+                                <div class="flex justify-between items-end mb-4 px-2">
+                                    <span class="text-sm font-bold text-violet-600 uppercase tracking-wider">Question ${this.state.currentQIndex + 1} <span class="text-slate-400">/ ${this.state.quizDeck.length}</span></span>
+                                    <div class="flex flex-col items-end">
+                                        <span class="text-xs font-bold text-slate-400 uppercase">Score</span>
+                                        <span class="text-xl font-black text-violet-600">${this.state.score}</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="w-full bg-white rounded-full h-3 mb-8 shadow-sm p-0.5">
+                                    <div class="bg-gradient-to-r from-violet-500 to-fuchsia-500 h-2 rounded-full transition-all duration-500" style="width: ${progress}%"></div>
+                                </div>
+
+                                <div class="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl shadow-violet-200/50 border border-white p-6 md:p-8 relative overflow-hidden mb-6">
+                                    <h2 class="text-2xl md:text-3xl font-black text-slate-800 mb-8 leading-tight relative z-10">${q.question}</h2>
+                                    <div class="space-y-3 relative z-10">
+                                        ${q._shuffledOptions.map((optObj, idx) => {
+                                            let btnClass = "w-full text-left p-5 rounded-2xl border-2 transition-all font-bold text-lg relative flex justify-between items-center ";
+                                            if (!this.state.isAnswered) {
+                                                btnClass += "bg-white border-transparent hover:border-violet-200 hover:shadow-lg text-slate-600 hover:text-violet-700";
+                                            } else {
+                                                if (optObj.isCorrect) btnClass += "bg-emerald-50 border-emerald-500 text-emerald-700";
+                                                else if (idx === this.state.selectedOption) btnClass += "bg-rose-50 border-rose-500 text-rose-700";
+                                                else btnClass += "bg-slate-50 border-transparent text-slate-300 opacity-60";
+                                            }
+                                            
+                                            return `
+                                                <button ${this.state.isAnswered ? 'disabled' : ''} onclick="app.handleAnswer(${idx})" class="${btnClass}">
+                                                    <span>${optObj.text}</span>
+                                                    ${this.state.isAnswered && optObj.isCorrect ? '<i data-lucide="check-circle" class="text-emerald-500"></i>' : ''}
+                                                    ${this.state.isAnswered && idx === this.state.selectedOption && !optObj.isCorrect ? '<i data-lucide="x-circle" class="text-rose-500"></i>' : ''}
+                                                </button>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                </div>
+
+                                <div class="flex justify-end">
+                                    <button onclick="app.nextQuestion()" ${!this.state.isAnswered ? 'disabled style="opacity:0; pointer-events:none"' : ''} 
+                                        class="flex items-center gap-2 px-8 py-4 rounded-2xl font-bold text-lg transition-all duration-300 bg-slate-900 text-white shadow-xl hover:-translate-y-1">
+                                        ${this.state.currentQIndex + 1 === this.state.quizDeck.length ? 'Finish Quiz' : 'Next Question'} 
+                                        <i data-lucide="arrow-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+
+                // 3. RESULT MODE
+                else if (this.state.mode === 'result') {
+                    const percentage = Math.round((this.state.score / this.state.quizDeck.length) * 100);
+                    html = `
+                        <div class="max-w-md mx-auto text-center pt-10 fade-in">
+                            <div class="bg-white rounded-[2rem] shadow-2xl shadow-violet-200/50 border border-white p-8 relative overflow-hidden">
+                                <div class="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-violet-500 via-fuchsia-500 to-amber-500"></div>
+                                <div class="mb-6 inline-flex p-6 bg-amber-100 rounded-full text-amber-500 mb-6 shadow-inner ring-8 ring-amber-50">
+                                    <i data-lucide="trophy" class="w-16 h-16"></i>
+                                </div>
+                                <h2 class="text-4xl font-black text-slate-800 mb-2">Quiz Complete!</h2>
+                                
+                                <div class="flex justify-center items-center gap-8 my-8 p-6 bg-slate-50 rounded-2xl">
+                                    <div class="text-center">
+                                        <div class="text-5xl font-black text-violet-600 tracking-tighter">${this.state.score}</div>
+                                        <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">Correct</div>
+                                    </div>
+                                    <div class="h-12 w-0.5 bg-slate-200 rounded-full"></div>
+                                    <div class="text-center">
+                                        <div class="text-5xl font-black text-slate-300 tracking-tighter">${this.state.quizDeck.length}</div>
+                                        <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">Total</div>
+                                    </div>
+                                </div>
+
+                                <div class="text-lg font-bold text-slate-600 mb-8">
+                                    Accuracy: <span class="${percentage >= 70 ? 'text-emerald-600' : 'text-orange-600'}">${percentage}%</span>
+                                </div>
+
+                                <button onclick="app.switchMode('quiz')" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg hover:-translate-y-1 transition-all">
+                                    <i data-lucide="rotate-ccw"></i> Replay Quiz
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = html;
+                lucide.createIcons(); // Re-render icons
+            }
+        };
+
+        // Start App
+        app.init();
+    </script>
+</body>
+</html>
